@@ -21,7 +21,10 @@ app.post("/auth", (req, res) => {
 
   const opts = {
     filter: `(samAccountName=${username})`,
-    scope: "sub",
+    scope: "sub",  
+    attributes: [
+      "accountExpires",
+    ]  
   };
 
   ldapClient.search(
@@ -38,18 +41,36 @@ app.post("/auth", (req, res) => {
           //* Se encontró un usuario en el directorio activo
           userFound = true;
           const userDn = entry.dn.toString();
+          const userData = entry.pojo.attributes;
 
-          //* Autenticar al usuario utilizando su contraseña
-          ldapClient.bind(userDn, password, (bindErr) => {
-            if (bindErr) {
-              //* La autenticación ha fallado
-              res.status(401).send("Credenciales inválidas");
-            } else {
-              //* La autenticación ha sido exitosa
-              res.send("Autenticación exitosa");
-            }
-          });
-        });
+          //* Verificar si 'userData' contiene el atributo 'accountExpires'
+          if (userData && userData.length > 0 && userData[0].type === 'accountExpires' && userData[0].values.length > 0) {
+          //* Leer el valor de 'accountExpires'
+          const accountExpires = parseInt(userData[0].values[0]);
+
+          //* Convertir el valor a una fecha
+          const accountExpiresDate = new Date((accountExpires/10000) - 11644473600000);
+          
+          //* Obtener la fecha actual
+          const currentDate = new Date();
+          
+          if(currentDate > accountExpiresDate){
+            res.status(401).send("La cuenta ha expirado");
+            return
+          }
+        }
+
+        //* Autenticar al usuario utilizando su contraseña
+        ldapClient.bind(userDn, password, (bindErr) => {
+          if (bindErr) {
+            //* La autenticación ha fallado
+            res.status(401).send("Contraseña incorecta");
+          } else {
+            //* La autenticación ha sido exitosa
+            res.status(200).send("Autenticación exitosa");
+          }
+      });
+    });
 
         //* Error en la búsqueda del usuario
         searchRes.on("error", (error) => {
@@ -92,7 +113,6 @@ app.post("/auth/:username", (req, res) => {
           //* Se encontró un usuario en el directorio activo
           userFound = true;
           const userDn = entry.dn.toString();
-
           //* Autenticar al usuario utilizando su contraseña
           ldapClient.bind(userDn, password, (bindErr) => {
             if (bindErr) {
