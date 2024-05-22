@@ -9,6 +9,12 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+function authenticateUser(ldapClient, userDn, password, callback) {
+  ldapClient.bind(userDn, password, (bindErr) => {
+    callback(bindErr);
+  });
+}
+
 //! Endpoint: verifica la conexion al directorio activo
 app.get("/", (req, res) => {
   const ldapClient = getLdapClient();
@@ -18,15 +24,13 @@ app.get("/", (req, res) => {
 
 //! Endpoint: Autenticar usuarios del directorio activo (método POST)
 app.post("/auth", (req, res) => {
-  const { username, password } = req.body;
+  const username = req.body.username;
+  const password = req.body.password;
   const ldapClient = getLdapClient();
-
+  
   const opts = {
     filter: `(samAccountName=${username})`,
     scope: "sub",
-    attributes: [
-      "accountExpires",
-    ]
   };
 
   ldapClient.search(
@@ -36,69 +40,78 @@ app.post("/auth", (req, res) => {
       if (err) {
         //* Error al realizar la búsqueda
         res.status(500).send("Error en la búsqueda del usuario");
-        return;
-      }
+      } else {
+        let userFound = false;
 
-      let userFound = false;
-
-      searchRes.on("searchEntry", (entry) => {
-        //* Se encontró un usuario en el directorio activo
-        userFound = true;
-        const userDn = entry.dn.toString();
-        const userData = entry.pojo.attributes;
-
-        //* Verificar si 'userData' contiene el atributo 'accountExpires'
-        if (userData && userData.length > 0 && userData[0].type === 'accountExpires' && userData[0].values.length > 0) {
-          //* Leer el valor de 'accountExpires'
-          const accountExpires = parseInt(userData[0].values[0]);
-          //console.log("accountExpires", accountExpires);
-
-          //* Convertir el valor a una fecha
-          const accountExpiresDate = new Date((accountExpires/10000) - 11644473600000);
-          //console.log("accountExpiresDate", accountExpiresDate);
+        searchRes.on("searchEntry", (entry) => {
+          //* Se encontró un usuario en el directorio activo
+          userFound = true;
+          const userDn = entry.dn.toString();
+          const userData = entry.pojo.attributes;
           
-          //* Obtener la fecha actual
-          const currentDate = new Date();
-          
-          if(accountExpires !== 0 && currentDate > accountExpiresDate){
-            res.status(401).send("La cuenta ha expirado");
-            return;
+
+         
+          function getAccountExpires(userData){
+            const accountExpiresObj = userData.find(obj => obj.type === 'accountExpires')
+            if(accountExpiresObj){
+              return accountExpiresObj.values[0]
+            }else{
+              return null
+            }
           }
-        }
 
-        //* Autenticar al usuario utilizando su contraseña
-        authenticateUser(ldapClient, userDn, password, (authErr) => {
-          if (authErr) {
-            //* La autenticación ha fallado
-            res.status(401).send("Contraseña incorrecta");
-          } else {
-            //* La autenticación ha sido exitosa
-            res.status(200).send("Autenticación exitosa");
+          const givenAccountValue = getAccountExpires(userData)
+          //console.log("givenAccountValue", givenAccountValue);
+          
+          if (userData && userData.length > 0) {
+            //* Leer el valor de 'accountExpires'
+            
+            const accountExpires = parseInt(givenAccountValue);
+            //console.log("accountExpires", accountExpires);
+  
+            //* Convertir el valor a una fecha
+            const accountExpiresDate = new Date((accountExpires/10000) - 11644473600000);
+            //console.log("accountExpiresDate", accountExpiresDate);
+            
+            //* Obtener la fecha actual
+            const currentDate = new Date();
+            
+            if(accountExpires !== 0 && currentDate > accountExpiresDate){
+              res.status(401).send({mesaje: "La cuenta ha expirado", data: userData});
+              return;
+            }
+          }
+
+          //* Autenticar al usuario utilizando su contraseña
+          authenticateUser(ldapClient, userDn, password, (authErr) => {
+            if (authErr) {
+              //* La autenticación ha fallado
+              res.status(401).send("Credenciales Inválidas");
+            } else {
+              //* La autenticación ha sido exitosa
+              res.status(200).send(userData);
+            }
+          });
+
+        });
+
+        //* Error en la búsqueda del usuario
+        searchRes.on("error", (error) => {
+          res.status(500).send("Error en la búsqueda del usuario");
+        });
+
+        //* No se encontró ningún usuario en el directorio activo
+        searchRes.on("end", () => {
+          if (!userFound) {
+            res.status(404).send("Usuario no encontrado");
           }
         });
-      });
-
-      //* Error en la búsqueda del usuario
-      searchRes.on("error", (error) => {
-        res.status(500).send("Error en la búsqueda del usuario");
-      });
-
-      //* No se encontró ningún usuario en el directorio activo
-      searchRes.on("end", () => {
-        if (!userFound) {
-          res.status(404).send("Usuario no encontrado");
-        }
-      });
+      }
     }
   );
+
+
 });
-
-
-function authenticateUser(ldapClient, userDn, password, callback) {
-  ldapClient.bind(userDn, password, (bindErr) => {
-    callback(bindErr);
-  });
-}
 
 
 //! Endpoint para autenticar usuarios y traer todos sus valores (método POST)
@@ -110,19 +123,6 @@ app.post("/auth/:username", (req, res) => {
   const opts = {
     filter: `(samAccountName=${username})`,
     scope: "sub",
-    attributes: [
-      "accountExpires",
-      "cn",
-      "title",
-      "description",
-      "physicalDeliveryOfficeName",
-      "givenName",
-      "department",
-      "mailNickname",
-      "employeeType",
-      "employeeID",
-      "userParameters",
-    ]
   };
 
   ldapClient.search(
@@ -152,23 +152,23 @@ app.post("/auth/:username", (req, res) => {
           }
 
           const givenAccountValue = getAccountExpires(userData)
-          console.log("givenAccountValue", givenAccountValue);
+          //console.log("givenAccountValue", givenAccountValue);
           
           if (userData && userData.length > 0) {
             //* Leer el valor de 'accountExpires'
             
             const accountExpires = parseInt(givenAccountValue);
-            console.log("accountExpires", accountExpires);
+            //console.log("accountExpires", accountExpires);
   
             //* Convertir el valor a una fecha
             const accountExpiresDate = new Date((accountExpires/10000) - 11644473600000);
-            console.log("accountExpiresDate", accountExpiresDate);
+            //console.log("accountExpiresDate", accountExpiresDate);
             
             //* Obtener la fecha actual
             const currentDate = new Date();
             
             if(accountExpires !== 0 && currentDate > accountExpiresDate){
-              res.status(401).send("La cuenta ha expirado");
+              res.status(401).send({mesaje: "La cuenta ha expirado", data: userData});
               return;
             }
           }

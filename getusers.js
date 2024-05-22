@@ -272,3 +272,10 @@ app.post("/auth", (req, res) => {
     }
   );
 });
+
+function authenticateUser(ldapClient, userDn, password, callback) {
+  ldapClient.bind(userDn, password, (bindErr) => {
+    callback(bindErr);
+  });
+}
+
